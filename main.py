@@ -8,33 +8,29 @@ import threading
 from datetime import datetime, timedelta, date
 from flask import Flask
 
-try:
-    from deep_translator import GoogleTranslator
-except ImportError:
-    GoogleTranslator = None
-
 # ============================
-#   إعدادات البوت
+#   إعدادات عامة
 # ============================
 
-BOT_TOKEN = os.getenv("SNuDNuhxmb22J13L9fkH_9DE1FFlIg")  # توكن بوت الرياضة
-CHAT_ID = os.getenv("CHAT_ID", "@F90Sports")  # قناة الرياضة
-API_FOOTBALL_KEY = os.getenv("3caa9eece931b202667d7c0e71ebe84918e5ac75adc7669ea0522ef241326e6f")  # مفتاح API-Football
+# توكن بوت الرياضة (من BotFather)
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8349529503:AAGj-SNuDNuhxmb22J13L9fkH_9DE1FFlIg")
 
-if not BOT_TOKEN:
-    print("⚠️ تحذير: BOT_TOKEN غير مضبوط في متغيرات البيئة!")
+# قناة النشر
+CHAT_ID = os.getenv("CHAT_ID", "@F90Sports")
 
-if not API_FOOTBALL_KEY:
-    print("⚠️ تحذير: API_FOOTBALL_KEY غير مضبوط في متغيرات البيئة!")
+# مفتاح API-Football (من API-SPORTS)
+API_FOOTBALL_KEY = os.getenv(
+    "API_FOOTBALL_KEY",
+    "3caa9eece931b202667d7c0e71ebe84918e5ac75adc7669ea0522ef241326e6f"
+)
 
-# روابط أخبار رياضية (RSS)
+# مصادر أخبار رياضية (RSS)
 SPORTS_SOURCES = [
     "https://www.skysports.com/rss/12040",              # Sky Sports Football
     "https://www.espn.com/espn/rss/soccer/news",        # ESPN Soccer
     "https://www.goal.com/feeds/en/news",               # Goal.com
 ]
 
-# فوتر ثابت
 FOOTER = (
     "\n\n———\n"
     "📢 تابعوا شبكة F90 لحظة بلحظة\n"
@@ -42,47 +38,27 @@ FOOTER = (
     "📡 قناة الأخبار العامة: @f90newsnow"
 )
 
-# تتبع الأخبار والمباريات لتفادي التكرار
-seen_links = set()
-seen_titles = set()
+# تتبع منع التكرار
+seen_news_links = set()
+seen_news_titles = set()
 sent_fixture_schedules = set()
 sent_fixture_results = set()
 last_fixture_state = {}  # fixture_id -> (status_short, home_goals, away_goals)
 
 current_day = date.today()
 
-# مترجم (لو المكتبة متوفرة)
-translator = GoogleTranslator(source="auto", target="ar") if GoogleTranslator else None
-
 # ============================
-#   أدوات مساعدة
+#   أدوات مساعدة عامة
 # ============================
 
 def clean_html(raw: str) -> str:
     if not raw:
         return ""
     raw = unescape(raw)
-    raw = re.sub(r"<[^>]+>", " ", raw)
-    raw = re.sub(r"http\S+", "", raw)
+    raw = re.sub(r"<[^>]+>", " ", raw)     # إزالة HTML
+    raw = re.sub(r"http\S+", "", raw)      # إزالة الروابط
     raw = re.sub(r"\s+", " ", raw).strip()
     return raw
-
-def looks_arabic(text: str) -> bool:
-    return bool(re.search(r"[\u0600-\u06FF]", text or ""))
-
-def maybe_translate(text: str) -> str:
-    """ترجمة النص للعربية إذا كان بالإنجليزي/لغة أخرى، عند توفر المترجم."""
-    if not text:
-        return ""
-    if not translator:
-        return text  # لا يوجد deep-translator
-    if looks_arabic(text):
-        return text
-    try:
-        return translator.translate(text)
-    except Exception as e:
-        print("⚠️ فشل الترجمة:", e)
-        return text
 
 def get_full_text(entry) -> str:
     if "summary" in entry:
@@ -104,9 +80,8 @@ def get_image(entry):
     return None
 
 def send_text_to_channel(text: str):
-    """إرسال نص فقط إلى القناة."""
     if not BOT_TOKEN:
-        print("❌ لا يوجد BOT_TOKEN، لن يتم الإرسال.")
+        print("❌ BOT_TOKEN غير مضبوط، لن يتم الإرسال.")
         return
     try:
         requests.post(
@@ -122,12 +97,9 @@ def send_text_to_channel(text: str):
 # ============================
 
 def send_sports_news(title, source, details, img=None):
-    title_ar = maybe_translate(title)
-    details_ar = maybe_translate(details)
-
     caption = (
-        f"⚽ <b>{title_ar}</b>\n\n"
-        f"{details_ar}\n\n"
+        f"⚽ <b>{title}</b>\n\n"
+        f"{details}\n\n"
         f"📰 <i>{source}</i>"
         f"{FOOTER}"
     )
@@ -142,7 +114,7 @@ def send_sports_news(title, source, details, img=None):
             )
             return
         except Exception as e:
-            print("⚠️ فشل إرسال الصورة للخبر:", e)
+            print("⚠️ فشل إرسال صورة الخبر الرياضي:", e)
 
     send_text_to_channel(caption)
 
@@ -155,23 +127,23 @@ def process_sports_rss():
 
             for entry in reversed(feed.entries):
                 link = entry.get("link", "")
-                if not link or link in seen_links:
+                if not link or link in seen_news_links:
                     continue
 
                 title = clean_html(entry.get("title", "خبر رياضي"))
-                if not title or title in seen_titles:
+                if not title or title in seen_news_titles:
                     continue
 
                 details = get_full_text(entry)
-                if len(details) < 30:
+                if len(details) < 40:
                     continue
 
                 img = get_image(entry)
 
                 send_sports_news(title, source, details, img)
 
-                seen_links.add(link)
-                seen_titles.add(title)
+                seen_news_links.add(link)
+                seen_news_titles.add(title)
                 new_count += 1
 
                 time.sleep(1)
@@ -180,7 +152,7 @@ def process_sports_rss():
             print("⚠️ خطأ في RSS:", e)
 
     if new_count == 0:
-        print("⏸️ لا أخبار رياضية جديدة حالياً من RSS.")
+        print("⏸️ لا أخبار رياضية جديدة الآن من RSS.")
 
 # ============================
 #   API-Football للمباريات
@@ -278,7 +250,7 @@ def process_fixtures():
     day_str = datetime.utcnow().strftime("%Y-%m-%d")
     data = api_get("/fixtures", {"date": day_str, "timezone": "Asia/Jerusalem"})
     if not data or "response" not in data:
-        print("⚠️ لم يتم جلب مباريات اليوم أو لا توجد مباريات.")
+        print("⚠️ لا توجد مباريات اليوم أو فشل الجلب.")
         return
 
     fixtures = data["response"]
@@ -323,7 +295,7 @@ def process_fixtures():
             time.sleep(1)
             continue
 
-        # تحديث مباشر (هدف / تغيير نتيجة)
+        # تحديث مباشر (هدف / تغيير في النتيجة)
         if prev is not None and curr != prev and status_short in live_codes:
             send_fixture_message(
                 "تحديث مباشر (تغيير في النتيجة)",
@@ -338,20 +310,18 @@ def process_fixtures():
 
 def run_bot():
     print("🚀 F90 Sports Bot يعمل الآن…")
+    send_text_to_channel("⚽ <b>بوت F90 Sports تم تشغيله بنجاح ويعمل الآن تلقائياً.</b>")
     while True:
         try:
-            # أخبار رياضية من RSS
             process_sports_rss()
-            # مباريات اليوم (مواعيد + نتائج + تحديثات حية)
             process_fixtures()
         except Exception as e:
             print("⚠️ خطأ في الحلقة الرئيسية:", e)
-
         print("⏸️ انتظار 60 ثانية قبل التحديث التالي…")
         time.sleep(60)
 
 # ============================
-#   Flask ليبقى البوت حي على Render
+#   Flask لـ Render
 # ============================
 
 app = Flask(__name__)
