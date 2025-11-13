@@ -19,7 +19,7 @@ except ImportError:
 
 BOT_TOKEN = os.getenv("SNuDNuhxmb22J13L9fkH_9DE1FFlIg")  # توكن بوت الرياضة
 CHAT_ID = os.getenv("CHAT_ID", "@F90Sports")  # قناة الرياضة
-API_FOOTBALL_KEY = os.getenv("8349529503:AAFi88Ui0F-SOZoqxNDWlq79cxjfQ4qCbAA")  # مفتاح API-Football
+API_FOOTBALL_KEY = os.getenv("3caa9eece931b202667d7c0e71ebe84918e5ac75adc7669ea0522ef241326e6f")  # مفتاح API-Football
 
 if not BOT_TOKEN:
     print("⚠️ تحذير: BOT_TOKEN غير مضبوط في متغيرات البيئة!")
