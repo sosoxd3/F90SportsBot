@@ -8,34 +8,56 @@ import threading
 from datetime import datetime, timedelta, date
 from flask import Flask
 
+try:
+    from deep_translator import GoogleTranslator
+except ImportError:
+    GoogleTranslator = None
+
 # ============================
 #   إعدادات عامة
 # ============================
 
-# توكن بوت الرياضة (من BotFather)
+# توكن بوت الرياضة (حطيته جاهز لك، تقدر تغيّره من متغيرات البيئة لو حاب)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8349529503:AAGj-SNuDNuhxmb22J13L9fkH_9DE1FFlIg")
 
 # قناة النشر
 CHAT_ID = os.getenv("CHAT_ID", "@F90Sports")
 
-# مفتاح API-Football (من API-SPORTS)
+# مفتاح API-Football (حطيته جاهز، نفس اللي عطيتني)
 API_FOOTBALL_KEY = os.getenv(
     "API_FOOTBALL_KEY",
     "3caa9eece931b202667d7c0e71ebe84918e5ac75adc7669ea0522ef241326e6f"
 )
 
-# مصادر أخبار رياضية (RSS)
+# صورة افتراضية لو ما فيه صورة خبر
+FALLBACK_IMAGE = "https://via.placeholder.com/900x500?text=F90+Sports"
+
+# مترجم (لو مكتبة deep-translator متوفرة)
+translator = GoogleTranslator(source="auto", target="ar") if GoogleTranslator else None
+
+# مصادر أخبار رياضية (RSS) — عربية + أجنبية + King’s League
 SPORTS_SOURCES = [
-    "https://www.skysports.com/rss/12040",              # Sky Sports Football
-    "https://www.espn.com/espn/rss/soccer/news",        # ESPN Soccer
-    "https://www.goal.com/feeds/en/news",               # Goal.com
+    # عربية عامة (كووورة)
+    "https://www.kooora.com/rss.aspx?region=-1",          # كووورة – عام
+    "https://www.kooora.com/rss.aspx?player=-1",         # كووورة – لاعبين
+
+    # أجنبية (ستُترجم للعربية)
+    "https://www.skysports.com/rss/12040",               # Sky Sports Football
+    "https://www.espn.com/espn/rss/soccer/news",         # ESPN Soccer
+    "https://www.goal.com/feeds/en/news",                # Goal.com
+
+    # King’s League (دوري الملوك)
+    "https://news.google.com/rss/search?q=King%27s+League&hl=en&gl=US&ceid=US:en",
+    "https://e00-marca.uecdn.es/rss/futbol/futbol-7.xml",
+    "https://as.com/rss/tags/kings_league/",
+    "https://www.sport.es/en/rss/section/football.xml"
 ]
 
 FOOTER = (
     "\n\n———\n"
-    "📢 تابعوا شبكة F90 لحظة بلحظة\n"
-    "📡 قناة الرياضة: @F90Sports\n"
-    "📡 قناة الأخبار العامة: @f90newsnow"
+    "📢 شبكة F90 — كل ما يخص كرة القدم لحظة بلحظة\n"
+    "📡 قناة الأخبار العامة: @f90newsnow\n"
+    "📡 قناة الرياضة: @F90Sports"
 )
 
 # تتبع منع التكرار
@@ -46,6 +68,21 @@ sent_fixture_results = set()
 last_fixture_state = {}  # fixture_id -> (status_short, home_goals, away_goals)
 
 current_day = date.today()
+
+# البطولات المهمة فقط (IDs من API-Football)
+IMPORTANT_LEAGUES = {
+    2,   # دوري أبطال أوروبا
+    3,   # الدوري الأوروبي
+    39,  # الدوري الإنجليزي
+    140, # الدوري الإسباني
+    135, # الدوري الإيطالي
+    78,  # الدوري الألماني
+    61,  # الدوري الفرنسي
+    307, # الدوري السعودي
+    289, # الدوري المصري
+    292, # الدوري المغربي
+    301, # الدوري القطري
+}
 
 # ============================
 #   أدوات مساعدة عامة
@@ -59,6 +96,23 @@ def clean_html(raw: str) -> str:
     raw = re.sub(r"http\S+", "", raw)      # إزالة الروابط
     raw = re.sub(r"\s+", " ", raw).strip()
     return raw
+
+def looks_arabic(text: str) -> bool:
+    return bool(re.search(r"[\u0600-\u06FF]", text or ""))
+
+def maybe_translate_to_ar(text: str) -> str:
+    """ترجمة للنص للعربية لو مش عربي."""
+    if not text:
+        return ""
+    if looks_arabic(text):
+        return text
+    if not translator:
+        return text
+    try:
+        return translator.translate(text)
+    except Exception as e:
+        print("⚠️ فشل الترجمة:", e)
+        return text
 
 def get_full_text(entry) -> str:
     if "summary" in entry:
@@ -92,31 +146,80 @@ def send_text_to_channel(text: str):
     except Exception as e:
         print("⚠️ خطأ في إرسال رسالة تيليجرام:", e)
 
+def send_photo_to_channel(caption: str, image_url: str):
+    if not BOT_TOKEN:
+        print("❌ BOT_TOKEN غير مضبوط، لن يتم الإرسال.")
+        return
+    try:
+        pdata = requests.get(image_url, timeout=10).content
+        requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
+            data={"chat_id": CHAT_ID, "caption": caption, "parse_mode": "HTML"},
+            files={"photo": pdata}
+        )
+    except Exception as e:
+        print("⚠️ فشل إرسال الصورة، سيتم إرسال نص فقط:", e)
+        send_text_to_channel(caption)
+
+# ============================
+#   ملخص لأهم مباريات اليوم (لإضافته أسفل بعض الأخبار)
+# ============================
+
+def get_top_matches_brief(max_matches=3):
+    day_str = datetime.utcnow().strftime("%Y-%m-%d")
+    data = api_get("/fixtures", {"date": day_str, "timezone": "Asia/Jerusalem"})
+    if not data or "response" not in data:
+        return ""
+
+    lines = []
+    count = 0
+    for fix in data["response"]:
+        league_id = fix.get("league", {}).get("id")
+        if league_id not in IMPORTANT_LEAGUES:
+            continue
+
+        teams = fix.get("teams", {})
+        home = teams.get("home", {}).get("name", "الفريق المضيف")
+        away = teams.get("away", {}).get("name", "الفريق الضيف")
+        league_name = fix.get("league", {}).get("name", "بطولة")
+
+        date_str = fix.get("fixture", {}).get("date")
+        try:
+            dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+            time_local = dt.strftime("%H:%M")
+        except Exception:
+            time_local = "غير معروف"
+
+        lines.append(f"• {home} × {away} — {time_local} ({league_name})")
+        count += 1
+        if count >= max_matches:
+            break
+
+    return "\n".join(lines)
+
 # ============================
 #   أخبار رياضية من RSS
 # ============================
 
 def send_sports_news(title, source, details, img=None):
+    # ترجمة لو الخبر مش عربي
+    title_ar = maybe_translate_to_ar(title) if not looks_arabic(title) else title
+    details_ar = maybe_translate_to_ar(details) if not looks_arabic(details) else details
+
     caption = (
-        f"⚽ <b>{title}</b>\n\n"
-        f"{details}\n\n"
+        f"⚽ <b>{title_ar}</b>\n\n"
+        f"{details_ar}\n\n"
         f"📰 <i>{source}</i>"
-        f"{FOOTER}"
     )
 
-    if img:
-        try:
-            pdata = requests.get(img, timeout=10).content
-            requests.post(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
-                data={"chat_id": CHAT_ID, "caption": caption, "parse_mode": "HTML"},
-                files={"photo": pdata}
-            )
-            return
-        except Exception as e:
-            print("⚠️ فشل إرسال صورة الخبر الرياضي:", e)
+    top_matches = get_top_matches_brief()
+    if top_matches:
+        caption += "\n\n🎮 <b>أبرز مباريات اليوم:</b>\n" + top_matches
 
-    send_text_to_channel(caption)
+    caption += FOOTER
+
+    image_to_use = img or FALLBACK_IMAGE
+    send_photo_to_channel(caption, image_to_use)
 
 def process_sports_rss():
     new_count = 0
@@ -146,7 +249,7 @@ def process_sports_rss():
                 seen_news_titles.add(title)
                 new_count += 1
 
-                time.sleep(1)
+                time.sleep(2)
 
         except Exception as e:
             print("⚠️ خطأ في RSS:", e)
@@ -192,6 +295,7 @@ def status_to_ar(short):
         "SUSP": "موقوفة",
         "PST": "مؤجّلة",
         "CANC": "ألغيت",
+        "LIVE": "مباشرة",
     }
     return mapping.get(short, short or "غير معروف")
 
@@ -228,6 +332,9 @@ def format_fixture_lines(fix):
     lines.append(f"⌛ <b>الحالة:</b> {status_ar}")
     if league.get("country"):
         lines.append(f"🌍 <b>الدولة:</b> {league['country']}")
+
+    # ما بنحط روابط بث مقرصنة، بس نلمّح للقنوات الرسمية
+    lines.append("\n📺 <b>القنوات المتوقعة:</b> قنوات رياضية رسمية (مثل beIN Sports أو قنوات محلية حسب بلدك).")
     return "\n".join(lines)
 
 def send_fixture_message(title, fix, extra_note):
@@ -238,7 +345,7 @@ def send_fixture_message(title, fix, extra_note):
 def process_fixtures():
     global sent_fixture_schedules, sent_fixture_results, last_fixture_state, current_day
 
-    # reset يوم جديد
+    # إعادة ضبط يوم جديد
     today = date.today()
     if today != current_day:
         current_day = today
@@ -262,6 +369,10 @@ def process_fixtures():
         if not fid:
             continue
 
+        league_id = fix.get("league", {}).get("id")
+        if league_id not in IMPORTANT_LEAGUES:
+            continue  # فقط المباريات المهمة
+
         status_obj = fixture.get("status", {})
         status_short = status_obj.get("short", "")
 
@@ -276,12 +387,12 @@ def process_fixtures():
         # مباريات قادمة (موعد فقط)
         if status_short in ("NS", "TBD", "") and fid not in sent_fixture_schedules:
             send_fixture_message(
-                "مباراة اليوم",
+                "مباراة مهمة اليوم",
                 fix,
                 "إعلان عن موعد مباراة ضمن جدول اليوم."
             )
             sent_fixture_schedules.add(fid)
-            time.sleep(1)
+            time.sleep(2)
             continue
 
         # نهاية المباراة
@@ -292,17 +403,17 @@ def process_fixtures():
                 "انتهت المباراة وتم تحديث النتيجة النهائية."
             )
             sent_fixture_results.add(fid)
-            time.sleep(1)
+            time.sleep(2)
             continue
 
         # تحديث مباشر (هدف / تغيير في النتيجة)
         if prev is not None and curr != prev and status_short in live_codes:
             send_fixture_message(
-                "تحديث مباشر (تغيير في النتيجة)",
+                "تحديث مباشر (تغيير في نتيجة مباراة مهمة)",
                 fix,
                 "قد يكون هذا التحديث بسبب هدف جديد أو تغيير في مجريات المباراة."
             )
-            time.sleep(1)
+            time.sleep(2)
 
 # ============================
 #   الحلقة الرئيسية
@@ -310,11 +421,11 @@ def process_fixtures():
 
 def run_bot():
     print("🚀 F90 Sports Bot يعمل الآن…")
-    send_text_to_channel("⚽ <b>بوت F90 Sports تم تشغيله بنجاح ويعمل الآن تلقائياً.</b>")
+    send_text_to_channel("⚽ <b>بوت F90 Sports (مود شامل) تم تشغيله ويعمل الآن تلقائياً على الأخبار والمباريات.</b>")
     while True:
         try:
-            process_sports_rss()
-            process_fixtures()
+            process_sports_rss()      # أخبار رياضية (مع King's League + ترجمة)
+            process_fixtures()       # مباريات اليوم المهمة + تحديثات
         except Exception as e:
             print("⚠️ خطأ في الحلقة الرئيسية:", e)
         print("⏸️ انتظار 60 ثانية قبل التحديث التالي…")
@@ -328,7 +439,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "✅ F90 Sports Bot يعمل الآن 24/7."
+    return "✅ F90 Sports Bot (Full Mode) يعمل الآن 24/7."
 
 @app.route("/test")
 def test():
