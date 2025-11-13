@@ -185,9 +185,7 @@ def send_photo_or_text(caption: str, image_url: str | None = None, reply_markup=
 def send_sports_news(title_ar, summary_ar, details_ar, link=None, image_url=None):
     # ملخص + تفاصيل كاملة + بدون سطر "المصدر"
     caption = f"⚽️ <b>{title_ar}</b>\n\n"
-    if summary_ar:
-        caption += f"📌 <b>ملخص قصير:</b>\n{summary_ar}\n\n"
-    caption += f"📄 <b>التفاصيل الكاملة:</b>\n{details_ar}\n"
+    if summary_ar:caption += f"📄 <b>التفاصيل الكاملة:</b>\n{details_ar}\n"
     caption += FOOTER
 
     # أزرار مخفية للروابط
