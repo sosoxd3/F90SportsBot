@@ -9,7 +9,6 @@ import requests
 from html import unescape
 from flask import Flask
 from deep_translator import GoogleTranslator
-import json
 
 # ============================
 # إعدادات عامة
@@ -22,66 +21,60 @@ API_FOOTBALL_KEY = os.getenv(
     "3caa9eece931b202667d7c0e71ebe84918e5ac75adc7669ea0522ef241326e6f",
 )
 
-# لوجو القناة الرياضي (صورة افتراضية إذا ما في صورة للخبر)
-DEFAULT_IMAGE_URL = "https://i.ibb.co/KzQK444K/file-00000000581871f5944b3ab066a737a1.png"
+DIRECT_LINK = "https://www.effectivegatecpm.com/y7ytegiy?key=8987b0a0eccadab53fa69732c3e254b8"
 
-# مصادر أخبار كرة القدم (RSS)
+DEFAULT_IMAGE_URL = None
+
 SPORTS_SOURCES = [
-    # عربية
-    "https://www.kooora.com/rss.aspx?region=-1",  # كووورة (عام)
-    "https://www.yallakora.com/feed",            # يلا كورة
-    # عالمية (إنجليزية – سيتم ترجمتها قدر الإمكان)
+    "https://www.kooora.com/rss.aspx?region=-1",
+    "https://www.yallakora.com/feed",
     "https://www.espn.com/espn/rss/soccer/news",
     "https://feeds.bbci.co.uk/sport/football/rss.xml",
-    "https://www.skysports.com/feeds/rss/12040",  # كرة قدم
-    # كينغز ليغ (نستخدم مصدر قريب عن الليجا)
+    "https://www.skysports.com/feeds/rss/12040",
     "https://www.marca.com/en/rss/futbol.html",
 ]
 
-# إعدادات مظهر الرسالة
 FOOTER = (
     "\n\n——————————\n"
     "📢 تابعوا أحدث الأخبار الرياضية لحظة بلحظة\n"
-    "⚽ قناة الرياضة: @F90Sports\n"
-    "📡 قناة الأخبار: @F90NewsNow\n"
+    "📡 قناة الرياضة: @F90Sports\n"
+    "📡 قناة الرياضة: @F90newsnow\n"
+    "\n🎥 <b>بث مباشر مباريات اليوم:</b>\n"
+    f"🔗 <a href=\"{DIRECT_LINK}\">اضغط هنا</a>\n"
 )
 
 seen_links = set()
 seen_titles = set()
 SEEN_LIMIT = 5000
+last_matches_day = None  # مباريات اليوم
 
-# لتتبع تحديثات المباريات
-FIXTURES_CACHE = {}  # fixture_id -> {"status": str, "goals": (home, away)}
 
 # ============================
-# دوال مساعدة عامة
+# دوال مساعدة
 # ============================
-
 
 def clean_html(raw: str) -> str:
     if not raw:
         return ""
     raw = unescape(raw)
-    raw = re.sub(r"<[^>]+>", " ", raw)  # إزالة وسوم HTML
-    raw = re.sub(r"http\S+", "", raw)   # إزالة الروابط
+    raw = re.sub(r"<[^>]+>", " ", raw)
+    raw = re.sub(r"http\S+", "", raw)
     raw = re.sub(r"\s+", " ", raw).strip()
     return raw
 
 
 def looks_like_arabic(text: str) -> bool:
-    return bool(re.search(r"[\u0600-\u06FF]", text or ""))
+    return bool(re.search(r"[\u0600-\u06FF]", text))
 
 
 def translate_to_ar(text: str) -> str:
-    """ترجمة النص للعربية قدر الإمكان، ولو فشلت يرجع النص الأصلي."""
     if not text:
         return text
     if looks_like_arabic(text):
         return text
     try:
         return GoogleTranslator(source="auto", target="ar").translate(text)
-    except Exception as e:
-        print("⚠️ فشل الترجمة:", e)
+    except:
         return text
 
 
@@ -91,7 +84,7 @@ def get_entry_datetime(entry):
             try:
                 tt = entry[key]
                 return datetime(*tt[:6])
-            except Exception:
+            except:
                 continue
     return None
 
@@ -106,9 +99,9 @@ def is_recent(entry, hours=24):
 def shrink_seen_sets():
     global seen_links, seen_titles
     if len(seen_links) > SEEN_LIMIT:
-        seen_links = set(list(seen_links)[-SEEN_LIMIT // 2:])
+        seen_links = set(list(seen_links)[-2500:])
     if len(seen_titles) > SEEN_LIMIT:
-        seen_titles = set(list(seen_titles)[-SEEN_LIMIT // 2:])
+        seen_titles = set(list(seen_titles)[-2500:])
 
 
 def get_image(entry):
@@ -117,9 +110,9 @@ def get_image(entry):
             try:
                 data = entry[key][0] if isinstance(entry[key], list) else entry[key]
                 url = data.get("url") or data.get("href")
-                if url and url.startswith("http") and not url.lower().endswith(".mp4"):
+                if url and not url.endswith(".mp4"):
                     return url
-            except Exception:
+            except:
                 pass
     summary = getattr(entry, "summary", "") or getattr(entry, "description", "")
     m = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', summary)
@@ -128,7 +121,7 @@ def get_image(entry):
     return DEFAULT_IMAGE_URL
 
 
-def get_full_text(entry) -> str:
+def get_full_text(entry):
     if "summary" in entry:
         return clean_html(entry.summary)
     if "description" in entry:
@@ -137,309 +130,165 @@ def get_full_text(entry) -> str:
 
 
 # ============================
-# إرسال الرسائل إلى تيليجرام
+# إرسال الرسالة
 # ============================
 
-
-def send_photo_or_text(caption: str, image_url: str | None = None, reply_markup=None):
+def send_photo_or_text(caption, image_url=None):
     if image_url:
         try:
             img_data = requests.get(image_url, timeout=15).content
-            data = {
-                "chat_id": CHAT_ID,
-                "caption": caption,
-                "parse_mode": "HTML",
-            }
-            if reply_markup:
-                data["reply_markup"] = json.dumps(reply_markup)
-            resp = requests.post(
+            r = requests.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
-                data=data,
+                data={"chat_id": CHAT_ID, "caption": caption, "parse_mode": "HTML"},
                 files={"photo": img_data},
-                timeout=30,
+                timeout=25,
             )
-            if resp.status_code != 200:
-                print("⚠️ خطأ إرسال صورة:", resp.text)
-                raise RuntimeError("photo error")
-            return
-        except Exception as e:
-            print("⚠️ فشل إرسال الصورة، سيتم الإرسال كنص فقط:", e)
+            if r.status_code == 200:
+                return
+        except:
+            pass
 
-    # fallback نص فقط
-    data = {
-        "chat_id": CHAT_ID,
-        "text": caption,
-        "parse_mode": "HTML",
-    }
-    if reply_markup:
-        data["reply_markup"] = json.dumps(reply_markup)
-    resp = requests.post(
+    requests.post(
         f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-        data=data,
-        timeout=30,
+        data={"chat_id": CHAT_ID, "text": caption, "parse_mode": "HTML"},
     )
-    if resp.status_code != 200:
-        print("⚠️ خطأ إرسال رسالة نصية:", resp.text)
 
 
-def send_sports_news(title_ar, summary_ar, details_ar, link=None, image_url=None):
-    # ملخص + تفاصيل كاملة + بدون سطر "المصدر"
-    caption = f"⚽️ <b>{title_ar}</b>\n\n"
-    if summary_ar:caption += f"📄 <b>التفاصيل الكاملة:</b>\n{details_ar}\n"
-    caption += FOOTER
-
-    # أزرار مخفية للروابط
-    buttons = []
-    if link:
-        buttons.append([{"text": "🌍 قراءة الخبر من الموقع", "url": link}])
-    buttons.append([{"text": "📡 قناة F90 Sports", "url": "https://t.me/F90Sports"}])
-
-    reply_markup = {"inline_keyboard": buttons}
-
-    send_photo_or_text(caption, image_url=image_url, reply_markup=reply_markup)
+def send_sports_news(title, source, details, image_url=None):
+    caption = (
+        f"⚽️ <b>{title}</b>\n\n"
+        f"📄 <b>التفاصيل:</b>\n{details}\n\n"
+        f"📰 <i>{source}</i>"
+        f"{FOOTER}"
+    )
+    send_photo_or_text(caption, image_url)
 
 
 # ============================
-# أخبار الرياضة من RSS
+# أخبار RSS
 # ============================
-
 
 def process_sports_feeds():
-    global seen_links, seen_titles
     new_count = 0
-
     for url in SPORTS_SOURCES:
         try:
             feed = feedparser.parse(url)
-            # source = feed.feed.get("title", "مصدر رياضي")  # لم نعد نعرضه نصياً
+            source = feed.feed.get("title", "مصدر رياضي")
 
             for entry in reversed(feed.entries):
-                if not is_recent(entry, hours=24):
+                if not is_recent(entry):
                     continue
 
                 link = entry.get("link", "")
-                if not link:
+                title = clean_html(entry.get("title", ""))
+
+                if not title or link in seen_links:
                     continue
 
-                title_raw = entry.get("title", "خبر رياضي")
-                title_clean = clean_html(title_raw)
-                if not title_clean:
+                details = get_full_text(entry)
+                if len(details) < 20:
                     continue
 
-                key_title = title_clean.lower()
-                if link in seen_links or key_title in seen_titles:
-                    continue
+                title_ar = translate_to_ar(title)
+                details_ar = translate_to_ar(details)
+                image = get_image(entry)
 
-                raw_text = get_full_text(entry)
-                if len(raw_text) < 30:
-                    continue
-
-                # ترجمة
-                title_ar = translate_to_ar(title_clean)
-
-                details_ar = translate_to_ar(raw_text)
-                if len(details_ar) > 2000:
-                    details_ar = details_ar[:2000] + "..."
-
-                summary_ar = details_ar[:260]  # ملخص قصير
-
-                image_url = get_image(entry)
-
-                send_sports_news(title_ar, summary_ar, details_ar, link=link, image_url=image_url)
+                send_sports_news(title_ar, source, details_ar, image)
 
                 seen_links.add(link)
-                seen_titles.add(key_title)
+                seen_titles.add(title.lower())
                 new_count += 1
-
                 time.sleep(2)
 
         except Exception as e:
-            print("⚠️ خطأ في المصدر الرياضي:", url, e)
+            print("⚠️ خطأ:", e)
 
     return new_count
 
 
 # ============================
-# مواعيد مباريات اليوم (API-FOOTBALL) مع تحديث مستمر
+# مباريات اليوم
 # ============================
 
-IMPORTANT_LEAGUES = [
-    39,   # Premier League
-    140,  # La Liga
-    135,  # Serie A
-    78,   # Bundesliga
-    61,   # Ligue 1
-    2,    # Champions League
-]
+IMPORTANT_LEAGUES = [39, 140, 135, 78, 61, 2]
 
 
-def fetch_today_fixtures_state():
-    """جلب حالة مباريات اليوم (للدوريات المهمة) مع تفاصيل أساسية."""
+def fetch_matches():
     today = datetime.utcnow().strftime("%Y-%m-%d")
     headers = {"x-apisports-key": API_FOOTBALL_KEY}
+    matches = []
 
-    fixtures = []
-
-    for league_id in IMPORTANT_LEAGUES:
+    for league in IMPORTANT_LEAGUES:
         try:
-            params = {
-                "date": today,
-                "league": league_id,
-                "timezone": "Asia/Jerusalem",
-            }
-            resp = requests.get(
+            r = requests.get(
                 "https://v3.football.api-sports.io/fixtures",
-                headers=headers,
-                params=params,
-                timeout=20,
+                params={"date": today, "league": league, "timezone": "Asia/Jerusalem"},
+                headers=headers, timeout=20,
             )
-            data = resp.json()
-            for item in data.get("response", []):
-                fixture = item.get("fixture", {})
-                league = item.get("league", {})
-                teams = item.get("teams", {})
-                goals = item.get("goals", {})
-
-                fixture_id = fixture.get("id")
-                if fixture_id is None:
-                    continue
-
-                league_name = league.get("name", "دوري")
-                home_name = teams.get("home", {}).get("name", "الفريق 1")
-                away_name = teams.get("away", {}).get("name", "الفريق 2")
-
-                status = fixture.get("status", {}).get("short", "")
-                date_iso = fixture.get("date")
-                time_str = ""
-                if date_iso:
-                    try:
-                        dt = datetime.fromisoformat(date_iso.replace("Z", "+00:00"))
-                        dt_local = dt + timedelta(hours=2)  # تقريباً توقيت القدس
-                        time_str = dt_local.strftime("%H:%M")
-                    except Exception:
-                        pass
-
-                home_g = goals.get("home")
-                away_g = goals.get("away")
-
-                fixtures.append(
-                    {
-                        "id": fixture_id,
-                        "league": league_name,
-                        "home": home_name,
-                        "away": away_name,
-                        "time": time_str,
-                        "status": status,
-                        "home_g": home_g,
-                        "away_g": away_g,
-                    }
-                )
-        except Exception as e:
-            print("⚠️ خطأ في جلب مباريات الدوري", league_id, e)
-
-    return fixtures
-
-
-def format_fixture_message(fx, kind="update"):
-    league = fx["league"]
-    home = fx["home"]
-    away = fx["away"]
-    time_str = fx["time"]
-    status = fx["status"]
-    hg = fx["home_g"]
-    ag = fx["away_g"]
-
-    if kind == "scheduled":
-        title = "📅 مباراة قادمة اليوم"
-    elif kind == "finished":
-        title = "✅ نهاية المباراة"
-    else:
-        title = "🔥 تحديث مباشر للمباراة"
-
-    msg = f"{title}\n\n"
-    msg += f"🏆 {league}\n"
-    msg += f"⚔ {home} vs {away}\n"
-    if time_str:
-        msg += f"⏰ التوقيت (تقريباً): {time_str} – بتوقيت القدس\n"
-    if hg is not None and ag is not None:
-        msg += f"🔢 النتيجة الحالية: {hg} : {ag}\n"
-    msg += "\n📺 ابحث عن البث المباشر حسب قنوات بلدك أو منصات البث.\n"
-    msg += FOOTER
-    return msg
-
-
-def check_fixture_updates():
-    """تحديث مستمر: إذا تغيرت نتيجة أو حالة مباراة → ينشر منشور."""
-    global FIXTURES_CACHE
-    fixtures = fetch_today_fixtures_state()
-    if not fixtures:
-        return
-
-    for fx in fixtures:
-        fid = fx["id"]
-        status = fx["status"]
-        goals = (fx["home_g"], fx["away_g"])
-
-        prev = FIXTURES_CACHE.get(fid)
-        if prev is None:
-            # أول مرة نشوف هذه المباراة → نرسل إشعار عن مباراة قادمة
-            if status in ("NS", "TBD"):
-                msg = format_fixture_message(fx, kind="scheduled")
-                send_photo_or_text(msg)
-            FIXTURES_CACHE[fid] = {"status": status, "goals": goals}
+            data = r.json()
+            matches.extend(data.get("response", []))
+        except:
             continue
 
-        # تغيير في الحالة أو النتيجة
-        if status != prev["status"] or goals != prev["goals"]:
-            kind = "finished" if status == "FT" else "update"
-            msg = format_fixture_message(fx, kind=kind)
-            send_photo_or_text(msg)
-            FIXTURES_CACHE[fid] = {"status": status, "goals": goals}
+    return matches
+
+
+def send_today_matches():
+    global last_matches_day
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+
+    if last_matches_day == today:
+        return
+
+    matches = fetch_matches()
+    if not matches:
+        return
+
+    msg = ["🏟 <b>مباريات اليوم (توقيت القدس)</b>\n"]
+
+    for m in matches:
+        league = m["league"]["name"]
+        home = m["teams"]["home"]["name"]
+        away = m["teams"]["away"]["name"]
+        time_str = m["fixture"]["date"][11:16]
+
+        msg.append(f"🏆 {league}\n• {home} vs {away} — {time_str}\n")
+
+    msg.append("📺 قد تختلف القنوات الناقلة حسب بلدك.")
+    send_photo_or_text("\n".join(msg))
+
+    last_matches_day = today
 
 
 # ============================
-# حلقة تشغيل البوت
+# حلقة البوت
 # ============================
-
 
 def run_bot():
-    print("🚀 F90 Sports Bot يعمل الآن…")
+    print("🚀 F90 Sports Bot يعمل...")
     while True:
         shrink_seen_sets()
 
-        # 1) أخبار الرياضة (RSS + ترجمة + صور + أزرار)
-        new_news = process_sports_feeds()
-        if new_news == 0:
-            print("⏸ لا أخبار رياضية جديدة الآن.")
+        process_sports_feeds()
+        send_today_matches()
 
-        # 2) تحديثات المباريات (كل تغيير بالنتيجة/الحالة)
-        check_fixture_updates()
-
-        time.sleep(60)  # انتظر 60 ثانية ثم أعد الدورة
+        time.sleep(60)
 
 
 # ============================
-# Flask ليبقى البوت حي على Render
+# Flask للحفاظ على البوت حي
 # ============================
 
 app = Flask(__name__)
 
-
 @app.route("/")
 def home():
-    return "✅ F90 Sports Bot يعمل الآن 24/7."
-
+    return "F90 Sports Bot يعمل الآن 24/7 ✔"
 
 @app.route("/test")
 def test():
-    msg = (
-        "🏟 <b>رسالة اختبار من F90 Sports Bot</b>\n\n"
-        "إذا وصلتك هذه الرسالة في القناة، فالبوت الرياضي يعمل بنجاح ✅"
-        f"{FOOTER}"
-    )
-    send_photo_or_text(msg)
-    return "تم إرسال رسالة اختبار إلى القناة."
-
+    send_photo_or_text("رسالة اختبار — البوت يعمل 👍")
+    return "Test sent"
 
 def run_flask():
     app.run(host="0.0.0.0", port=8080)
