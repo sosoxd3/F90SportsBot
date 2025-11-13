@@ -14,7 +14,7 @@ from deep_translator import GoogleTranslator
 # إعدادات عامة
 # ============================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8349529503:AAGj-SNuDNuhxmb22J13L9fkH_9DE1FFlIg")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8278742496:AAH8lDMB0ci6mX0I7JIiIbuB8ZudyWVqT3E")
 CHAT_ID = os.getenv("CHAT_ID", "@F90Sports")
 API_FOOTBALL_KEY = os.getenv(
     "API_FOOTBALL_KEY",
