@@ -1,5 +1,2 @@
-feedparser
-requests
 Flask
-deep-translator==1.11.4
-beautifulsoup4
+requests
