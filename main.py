@@ -8,9 +8,6 @@ from flask import Flask
 # ============================
 #   إعدادات أساسية
 # ============================
-# ============================
-#   إعدادات أساسية
-# ============================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID", "@F90Sports")
@@ -18,15 +15,16 @@ API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY")
 
 if not BOT_TOKEN or not API_FOOTBALL_KEY:
     print("❌ BOT_TOKEN أو API_FOOTBALL_KEY غير مضبوطين في Environment Variables!")
-    
+
 # توقيت القدس (تقريبي UTC+2)
 TZ_OFFSET = 2
 
 # إعدادات تكرار
-LIVE_POLL_SECONDS = 60          # فحص لايف كل 60 ثانية
-SCHEDULE_EVERY_SECONDS = 1800   # جدولة (كل 30 دقيقة)
+LIVE_POLL_SECONDS = 60                # فحص لايف كل 60 ثانية
+SCHEDULE_EVERY_SECONDS = 1800         # جدول كل 30 دقيقة
 TOPSCORERS_EVERY_SECONDS = 12 * 3600  # هدافين كل 12 ساعة
 MATCH_OF_WEEK_EVERY_SECONDS = 12 * 3600  # مباراة الأسبوع كل 12 ساعة
+STANDINGS_EVERY_SECONDS = 3600        # ترتيب النقاط كل ساعة
 
 # دوريات مهمة
 IMPORTANT_LEAGUES = [
@@ -40,6 +38,10 @@ IMPORTANT_LEAGUES = [
     848,  # Saudi Pro League
 ]
 
+# الموسم الصحيح تلقائيًا (تقريبي: من أغسطس يبدأ موسم جديد)
+today_date = datetime.utcnow().date()
+CURRENT_SEASON = today_date.year if today_date.month >= 8 else today_date.year - 1
+
 # فرق VIP برسائل خاصة
 FAVORITE_TEAMS = [
     "Real Madrid",
@@ -48,16 +50,29 @@ FAVORITE_TEAMS = [
     "Al Ittihad",
 ]
 
+# Footer موحّد لكل الرسائل
+FOOTER = (
+    "\n\n——————————————\n"
+    "📡 قناة الرياضة: @F90Sports\n"
+    "📰 قناة الأخبار: @f90newsnow\n"
+)
+
+# لتجميع نتائج اليوم للملخص اليومي
+daily_results = {}   # { 'YYYY-MM-DD': [ {league, home, away, score} ] }
+current_local_day = None  # سيتم ضبطه في البداية
+
 
 # ============================
 #   أدوات عامة
 # ============================
 
-def tg_send_message(text):
+def tg_send_message(text, add_footer=True):
     """إرسال نص لتلجرام."""
     if not BOT_TOKEN:
         print("❌ BOT_TOKEN مفقود.")
         return
+    if add_footer:
+        text = text + FOOTER
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
         r = requests.post(url, data={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}, timeout=15)
@@ -67,14 +82,15 @@ def tg_send_message(text):
         print("Telegram sendMessage exception:", e)
 
 
-def tg_send_photo(photo_url, caption):
+def tg_send_photo(photo_url, caption, add_footer=True):
     """إرسال صورة + كابشن. لو فشل، يرسل نص فقط."""
     if not BOT_TOKEN:
         print("❌ BOT_TOKEN مفقود.")
         return
+    if add_footer:
+        caption = caption + FOOTER
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
     try:
-        # نمرر رابط الصورة مباشرة
         r = requests.post(
             url,
             data={"chat_id": CHAT_ID, "caption": caption, "parse_mode": "HTML", "photo": photo_url},
@@ -83,10 +99,10 @@ def tg_send_photo(photo_url, caption):
         if r.status_code != 200:
             print("Telegram sendPhoto error:", r.text)
             # fallback
-            tg_send_message(caption)
+            tg_send_message(caption, add_footer=False)
     except Exception as e:
         print("Telegram sendPhoto exception:", e)
-        tg_send_message(caption)
+        tg_send_message(caption, add_footer=False)
 
 
 def api_football_get(path, params=None):
@@ -114,6 +130,16 @@ def utc_to_local_str(iso_str):
         return iso_str
 
 
+def utc_to_local_date_str(iso_str):
+    """إرجاع تاريخ محلي (YYYY-MM-DD) من وقت ISO."""
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00")).replace(tzinfo=timezone.utc)
+        dt_local = dt + timedelta(hours=TZ_OFFSET)
+        return dt_local.date().isoformat()
+    except Exception:
+        return datetime.utcnow().date().isoformat()
+
+
 def is_favorite_match(fixture):
     """هل المباراة تخص فريق VIP؟"""
     home = fixture["teams"]["home"]["name"]
@@ -136,7 +162,7 @@ def fetch_fixtures_for_dates(date_from, date_to):
             "from": date_from,
             "to": date_to,
             "league": league_id,
-            "season": datetime.utcnow().year,
+            "season": CURRENT_SEASON,
             "timezone": "UTC",
         }
         data = api_football_get("/fixtures", params=params)
@@ -215,10 +241,9 @@ def send_schedule_text_and_vip_posters():
             "📣 قناة الرياضة: @F90Sports"
         )
 
-        # نحاول استخدام لوجو الهوم
         logo = t["home"].get("logo") or t["away"].get("logo")
         if logo:
-            tg_send_photo(logo, caption)
+            tg_send_photo(logo, caption, add_footer=True)
         else:
             tg_send_message(caption)
 
@@ -234,7 +259,7 @@ def send_top_scorers():
     for league_id in IMPORTANT_LEAGUES[:5]:  # نكتفي بـ 5 دوريات
         data = api_football_get("/players/topscorers", params={
             "league": league_id,
-            "season": datetime.utcnow().year,
+            "season": CURRENT_SEASON,
         })
         resp = data.get("response", [])
         if not resp:
@@ -268,24 +293,20 @@ def pick_match_of_week():
     if not fixtures_week:
         return None
 
-    # نختار مباراة فيها فريق VIP أولاً، أو دوري قوي
     vip_matches = [f for f in fixtures_week if is_favorite_match(f)]
     if vip_matches:
         return vip_matches[0]
 
-    # وإلا نختار أول مباراة من دوري أبطال أوروبا أو دوري كبير
     for fx in fixtures_week:
         league_name = fx["league"]["name"].lower()
-        if any(k in league_name for k in ["champions", "ريال", "برشلونة"]):
+        if any(k in league_name for k in ["champions"]):
             return fx
 
-    # أخيراً، أول مباراة في اللائحة
     return fixtures_week[0]
 
 
 def simple_predict(home_name, away_name):
-    """توقع بسيط بدون ذكاء حقيقي (فقط لأجل الشكل)."""
-    # ترجيح بسيط للفرق الكبيرة
+    """توقع بسيط (ديكور فقط)."""
     big = ["real madrid", "barcelona", "manchester city", "bayern", "liverpool", "al nassr", "al ittihad"]
     score = 0
     if any(b in home_name.lower() for b in big):
@@ -327,7 +348,7 @@ def send_match_of_week():
 
     logo = t["home"].get("logo") or t["away"].get("logo")
     if logo:
-        tg_send_photo(logo, txt)
+        tg_send_photo(logo, txt, add_footer=True)
     else:
         tg_send_message(txt)
 
@@ -389,12 +410,10 @@ def check_and_send_pre_match_alerts(fx):
         f"⏰ {time_str}"
     )
 
-    # قبل 10 دقائق
     if 5 < minutes_to_ko <= 10 and not pre_alerts[fixture_id]["10"]:
         tg_send_message("⏳ <b>بعد 10 دقائق تنطلق مباراة:</b>\n" + base_txt)
         pre_alerts[fixture_id]["10"] = True
 
-    # قبل 5 دقائق
     if 0 < minutes_to_ko <= 5 and not pre_alerts[fixture_id]["5"]:
         tg_send_message("⏳ <b>بعد 5 دقائق تنطلق مباراة:</b>\n" + base_txt)
         pre_alerts[fixture_id]["5"] = True
@@ -425,7 +444,6 @@ def format_live_header(fx):
 def format_half_stats(stats_resp):
     if not stats_resp:
         return "📊 لا توجد إحصائيات متاحة حالياً."
-    # stats_resp: list of {team: {name}, statistics: [{type, value}, ...]}
     lines = ["📊 <b>إحصائيات المباراة (تقريبية)</b>"]
     for team_stats in stats_resp:
         team_name = team_stats["team"]["name"]
@@ -440,8 +458,27 @@ def format_half_stats(stats_resp):
     return "\n".join(lines)
 
 
+def extract_goals_summary(events):
+    """إرجاع ملخص بسيط للأهداف من قائمة الأحداث."""
+    goals_lines = []
+    for ev in events:
+        if ev.get("type") != "Goal":
+            continue
+        minute = ev.get("time", {}).get("elapsed")
+        team_name = ev.get("team", {}).get("name", "")
+        player = ev.get("player", {}).get("name", "")
+        detail = ev.get("detail", "")
+        line = f"⚽️ {minute}' – {team_name} – {player}"
+        if detail:
+            line += f" ({detail})"
+        goals_lines.append(line)
+    if not goals_lines:
+        return "⚽️ لم تسجّل أهداف (أو لا تتوفر بيانات مفصلة)."
+    return "\n".join(goals_lines)
+
+
 def process_live_fixtures():
-    global live_state
+    global live_state, daily_results
 
     live = fetch_live_fixtures()
     if not live:
@@ -452,14 +489,13 @@ def process_live_fixtures():
         f = fx["fixture"]
         fixture_id = f["id"]
 
-        # تنبيهات قبل المباراة
         check_and_send_pre_match_alerts(fx)
 
         prev = live_state.get(fixture_id)
         goals = fx["goals"]
         score_home = goals["home"]
         score_away = goals["away"]
-        status_short = f["status"]["short"]  # "1H", "HT", "2H", "FT"...
+        status_short = f["status"]["short"]
 
         # أول مرة نرى المباراة لايف
         if not prev:
@@ -476,7 +512,7 @@ def process_live_fixtures():
                 "ht_stats_sent": False,
             }
         else:
-            # تغيير في النتيجة (هدف)
+            # هدف جديد
             if score_home != prev["score_home"] or score_away != prev["score_away"]:
                 header = format_live_header(fx)
                 if is_favorite_match(fx):
@@ -487,7 +523,7 @@ def process_live_fixtures():
                 prev["score_home"] = score_home
                 prev["score_away"] = score_away
 
-            # تغيير حالة المباراة (HT, FT, إلخ)
+            # تغيير حالة المباراة (HT, FT,...)
             if status_short != prev["status"]:
                 header = format_live_header(fx)
                 if status_short == "HT":
@@ -501,12 +537,43 @@ def process_live_fixtures():
                     prev["ht_stats_sent"] = True
                 elif status_short == "FT":
                     tg_send_message("🏁 <b>نهاية المباراة</b>\n" + header)
+
+                    # ملخص كامل بعد نهاية المباراة
+                    try:
+                        events = fetch_fixture_events(fixture_id)
+                        goals_txt = extract_goals_summary(events)
+                        stats = fetch_fixture_stats(fixture_id)
+                        stats_txt = format_half_stats(stats)
+
+                        summary = (
+                            "📊 <b>ملخص المباراة (نهائي)</b>\n\n"
+                            + header + "\n\n"
+                            + goals_txt + "\n\n"
+                            + stats_txt
+                        )
+                        tg_send_message(summary)
+                    except Exception as e:
+                        print("Post-match summary error:", e)
+
+                    # حفظ النتيجة لملخص اليوم
+                    local_day = utc_to_local_date_str(f["date"])
+                    league_name = fx["league"]["name"]
+                    home = fx["teams"]["home"]["name"]
+                    away = fx["teams"]["away"]["name"]
+                    score_str = f"{goals['home']} - {goals['away']}"
+                    daily_results.setdefault(local_day, []).append({
+                        "league": league_name,
+                        "home": home,
+                        "away": away,
+                        "score": score_str,
+                    })
+
                 else:
                     tg_send_message("🔄 <b>تحديث حالة المباراة</b>\n" + header)
 
                 prev["status"] = status_short
 
-        # أحداث التفاصيل: أهداف، بطاقات، تبديلات
+        # أحداث تفصيلية: أهداف، بطاقات، تبديلات
         events = fetch_fixture_events(fixture_id)
         for ev in events:
             key = (
@@ -549,17 +616,106 @@ def process_live_fixtures():
 
 
 # ============================
+#   ترتيب النقاط (Standings)
+# ============================
+
+def fetch_standings(league_id):
+    data = api_football_get("/standings", params={
+        "league": league_id,
+        "season": CURRENT_SEASON,
+    })
+    resp = data.get("response", [])
+    if not resp:
+        return None
+    league = resp[0]["league"]
+    name = league["name"]
+    table = league["standings"][0]  # أول مجموعة (غالباً مجموعة واحدة)
+    return name, table
+
+
+def send_all_standings():
+    lines = ["📊 <b>ترتيب أهم الدوريات (تقريبي)</b>\n"]
+    for league_id in IMPORTANT_LEAGUES[:6]:
+        try:
+            result = fetch_standings(league_id)
+            if not result:
+                continue
+            league_name, table = result
+            lines.append(f"🏆 <b>{league_name}</b>")
+            for row in table[:5]:
+                rank = row["rank"]
+                team = row["team"]["name"]
+                pts = row["points"]
+                played = row["all"]["played"]
+                gd = row["goalsDiff"]
+                lines.append(f"{rank}. {team} – {pts} نقطة (مباريات: {played}، فارق: {gd})")
+            lines.append("")
+        except Exception as e:
+            print("Standings error:", e)
+
+    if len(lines) > 1:
+        tg_send_message("\n".join(lines))
+
+
+# ============================
+#   ملخص يومي للمباريات
+# ============================
+
+def send_daily_summary_for_day(day_str):
+    """إرسال ملخص نهائي لكل مباريات يوم معيّن."""
+    results = daily_results.get(day_str, [])
+    if not results:
+        print(f"📭 لا توجد نتائج مسجّلة لليوم {day_str}")
+        return
+
+    lines = [f"📊 <b>ملخص مباريات يوم {day_str} (بتوقيت القدس)</b>\n"]
+    # تجميع حسب الدوري
+    by_league = {}
+    for r in results:
+        by_league.setdefault(r["league"], []).append(r)
+
+    total_matches = 0
+    for league_name, matches in by_league.items():
+        lines.append(f"🏆 <b>{league_name}</b>")
+        for m in matches:
+            lines.append(f"• {m['home']} {m['score']} {m['away']}")
+            total_matches += 1
+        lines.append("")
+
+    lines.append(f"📌 إجمالي المباريات التي تم لعبها اليوم: {total_matches}")
+    tg_send_message("\n".join(lines))
+
+
+# ============================
 #   حلقة التشغيل الرئيسية
 # ============================
 
 def run_loop():
+    global current_local_day
+
     print("🚀 F90 Sports Live Bot started...")
+
+    # ضبط اليوم الحالي بتوقيت القدس
+    now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
+    now_local = now_utc + timedelta(hours=TZ_OFFSET)
+    current_local_day = now_local.date()
+
     last_schedule = 0
     last_topscorers = 0
     last_match_of_week = 0
+    last_standings = 0
 
     while True:
         now = time.time()
+
+        # فحص تغيّر اليوم لإرسال ملخص اليوم السابق
+        now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
+        now_local = now_utc + timedelta(hours=TZ_OFFSET)
+        today_local = now_local.date()
+        if today_local != current_local_day:
+            prev_day_str = current_local_day.isoformat()
+            send_daily_summary_for_day(prev_day_str)
+            current_local_day = today_local
 
         # 1) جدول المباريات + بوسترات VIP كل نصف ساعة
         if now - last_schedule > SCHEDULE_EVERY_SECONDS:
@@ -585,7 +741,15 @@ def run_loop():
                 print("Match-of-week error:", e)
             last_match_of_week = now
 
-        # 4) بث لايف دائم
+        # 4) ترتيب النقاط كل ساعة
+        if now - last_standings > STANDINGS_EVERY_SECONDS:
+            try:
+                send_all_standings()
+            except Exception as e:
+                print("Standings loop error:", e)
+            last_standings = now
+
+        # 5) بث لايف دائم
         try:
             process_live_fixtures()
         except Exception as e:
