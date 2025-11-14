@@ -8,14 +8,17 @@ from flask import Flask
 # ============================
 #   إعدادات أساسية
 # ============================
+# ============================
+#   إعدادات أساسية
+# ============================
 
-BOT_TOKEN = os.getenv("8278742496:AAH8lDMB0ci6mX0I7JIiIbuB8ZudyWVqT3E")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID", "@F90Sports")
-API_FOOTBALL_KEY = os.getenv("3caa9eece931b202667d7c0e71ebe84918e5ac75adc7669ea0522ef241326e6f")
+API_FOOTBALL_KEY = os.getenv("API_FOOTBALL_KEY")
 
 if not BOT_TOKEN or not API_FOOTBALL_KEY:
     print("❌ BOT_TOKEN أو API_FOOTBALL_KEY غير مضبوطين في Environment Variables!")
-
+    
 # توقيت القدس (تقريبي UTC+2)
 TZ_OFFSET = 2
 
